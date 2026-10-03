@@ -31,6 +31,16 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
+/* Size of the guest memory slot: one x86 page, 4 KiB. KVM requires both the
+ * start address and the length of a memory slot to be page-aligned. */
+#define GUEST_MEM_SIZE 0x1000
+
+/* Guest physical address the slot starts at: one page in, so the page at
+ * physical 0 -- where the real-mode interrupt descriptor table lives -- is
+ * left unmapped. Spelled in terms of GUEST_MEM_SIZE because the two only
+ * coincide by construction: this guest is one page, placed in the second. */
+#define GUEST_LOAD_ADDR GUEST_MEM_SIZE
+
 /* The guest program: 13 bytes of hand-assembled x86 machine code.
  *
  * It is written for 16-bit real mode, where instructions are encoded without
@@ -109,17 +119,17 @@ int main(void) {
   /* Step 4: allocate backing store for guest RAM.
    *
    * Guest memory is ordinary host memory supplied by userspace, so KVM never
-   * allocates RAM itself. Here one page (4 KiB) is mapped anonymously:
+   * allocates RAM itself. Here GUEST_MEM_SIZE bytes are mapped anonymously:
    *
    *   NULL              let the kernel choose the host address
-   *   0x1000            one page, the size of a memory slot below
+   *   GUEST_MEM_SIZE    one page, the length of the memory slot below
    *   PROT_READ|WRITE   the guest may both read and write this page
    *   MAP_SHARED        real memory, not a private copy; the guest's writes
    *                     must be visible to the host
    *   MAP_ANONYMOUS     no file backing; the pages start out zeroed
    *   fd -1             required for anonymous mappings
    */
-  uint8_t *mem = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
+  uint8_t *mem = mmap(NULL, GUEST_MEM_SIZE, PROT_READ | PROT_WRITE,
                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   /* mmap() reports failure by returning MAP_FAILED ((void *)-1), never NULL,
    * so comparing against NULL here could not detect an error. */
@@ -137,16 +147,16 @@ int main(void) {
    * kernel, so a stack temporary is enough.
    */
   struct kvm_userspace_memory_region region = {
-      /* Slots are keyed by number; only one is needed for a 4 KiB guest. */
+      /* Slots are keyed by number; a one-page guest needs only one. */
       .slot = 0,
-      /* Guest physical address where this slot starts. It is deliberately not
-       * zero: with cs.base = 0 below, the linear address the vCPU fetches
-       * from equals the guest physical address, so leaving the first page
-       * unmapped keeps execution clear of the real-mode interrupt
-       * descriptor table that lives at physical 0. */
-      .guest_phys_addr = 0x1000,
-      /* Length of the slot; matches the single page mapped in step 4. */
-      .memory_size = 0x1000,
+      /* Guest physical address where this slot starts, i.e. GUEST_LOAD_ADDR.
+       * It is deliberately not zero: with cs.base = 0 below, the linear
+       * address the vCPU fetches from equals the guest physical address, so
+       * leaving the first page unmapped keeps execution clear of the
+       * real-mode interrupt descriptor table that lives at physical 0. */
+      .guest_phys_addr = GUEST_LOAD_ADDR,
+      /* Length of the slot; matches the mapping length used in step 4. */
+      .memory_size = GUEST_MEM_SIZE,
       /* Host address of the mapping registered by this slot. */
       .userspace_addr = (uint64_t)mem,
   };
@@ -231,8 +241,8 @@ int main(void) {
    */
   struct kvm_regs regs = {
       /* Instruction pointer: where execution begins. Matches the start of
-       * the guest program, which the memory slot places at 0x1000. */
-      .rip = 0x1000,
+       * the guest program, which the memory slot places at GUEST_LOAD_ADDR. */
+      .rip = GUEST_LOAD_ADDR,
       /* Guest code computes 2 + 2 = 4 and converts that to ASCII. */
       .rax = 2,
       .rbx = 2,
