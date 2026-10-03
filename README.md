@@ -114,22 +114,45 @@ Other than the fixes above and comments, the sample is unmodified.
 
 ## How it works
 
-Numbering matches the step comments in `kvmtest.c`.
+### KVM requests
 
-| Step | Call | Purpose |
-| --- | --- | --- |
-| 1 | `open("/dev/kvm")` | Acquire the KVM system device. |
-| 2 | `KVM_GET_API_VERSION` | Assert the stable API version (12). |
-| 3 | `KVM_CREATE_VM` | Create a VM. |
-| 4 | `mmap` | Back one page of host memory with the guest program. |
-| 5 | `KVM_SET_USER_MEMORY_REGION` | Register that page as guest RAM at physical `0x1000`. |
-| 6 | `KVM_CREATE_VCPU` | Create one vCPU. |
-| 7 | `KVM_GET_VCPU_MMAP_SIZE` | Learn the size of the run area, including per-exit data. |
-| 8 | `mmap` on `vcpufd` | Map the shared `struct kvm_run` region used to report exit reasons. |
-| 9 | `KVM_GET_SREGS` / `KVM_SET_SREGS` | Force `cs.base = 0` and `cs.selector = 0` so the CPU stays in real mode, bypassing paging and the real-mode interrupt descriptor table. |
-| 10 | `KVM_SET_REGS` | Set `rip = 0x1000`, `rax = rbx = 2`, and `rflags = 0x2` (the architecturally reserved bit that must be set). |
-| 11 | `KVM_RUN` | Enter the guest; returns on VM exit with `run->exit_reason` set. |
-| 12–16 | exit dispatch | Handle `KVM_EXIT_HLT` (success) and `KVM_EXIT_IO`; treat anything else as fatal. |
+The sample issues nine ioctls. Which descriptor a request is issued on
+decides what it acts on, and there are only three kinds:
+
+- `kvm` — the system device obtained from `open("/dev/kvm")`. System-wide
+  requests only: API version, VM creation, run-area sizing.
+- `vmfd` — one VM. Requests about that VM's memory map and its vCPUs.
+- `vcpufd` — one vCPU. Requests about that vCPU's register state and its
+  execution.
+
+KVM's requests follow three conventions for passing data: some return a new
+file descriptor, some return a plain value, and some take a pointer to a
+structure the kernel either fills in or reads out.
+
+Step numbering matches the step comments in `kvmtest.c`.
+
+| Step | Request | On | Argument | Effect |
+| --- | --- | --- | --- | --- |
+| 1 | `open("/dev/kvm")` | — | `O_RDWR \| O_CLOEXEC` | Acquire the KVM system device. Not a KVM request. |
+| 2 | `KVM_GET_API_VERSION` | `kvm` | `NULL` | Returns the API version; must be 12. |
+| 3 | `KVM_CREATE_VM` | `kvm` | `0`, the VM type | Returns a new VM fd. |
+| 4 | `mmap` | — | `GUEST_MEM_SIZE`, anonymous | Back one page of host memory with the guest program. Not a KVM request. |
+| 5 | `KVM_SET_USER_MEMORY_REGION` | `vmfd` | `&region` | Register that page as guest RAM at physical `0x1000`. |
+| 6 | `KVM_CREATE_VCPU` | `vmfd` | `0`, the vCPU index | Returns a vCPU fd. |
+| 7 | `KVM_GET_VCPU_MMAP_SIZE` | `kvm` | `NULL` | Returns the run-area size, including space for per-exit data. |
+| 8 | `mmap` on `vcpufd` | — | offset 0 | Map the shared `struct kvm_run` region used to report exit reasons. Not a KVM request. |
+| 9 | `KVM_GET_SREGS` | `vcpufd` | `&sregs` | Read the special registers. First half of a read-modify-write. |
+| 9 | `KVM_SET_SREGS` | `vcpufd` | `&sregs` | Write them back with `cs.base = 0` and `cs.selector = 0`, keeping the vCPU in real mode and bypassing paging and the real-mode interrupt descriptor table. |
+| 10 | `KVM_SET_REGS` | `vcpufd` | `&regs` | Set `rip = 0x1000`, `rax = rbx = 2`, and `rflags = 0x2` (the architecturally reserved bit that must be set). |
+| 11 | `KVM_RUN` | `vcpufd` | `NULL` | Enter the guest; returns on VM exit with `run->exit_reason` set. |
+
+Steps 1, 4 and 8 are ordinary `open`/`mmap` calls rather than KVM requests.
+Steps 12–16 are not requests either: they inspect what `KVM_RUN` reported and
+are covered under [Exit handling](#exit-handling).
+
+The two memory quantities are named in the code as `GUEST_MEM_SIZE` (the slot
+length) and `GUEST_LOAD_ADDR` (the guest physical address it starts at),
+currently both `0x1000`.
 
 ### The guest program
 
