@@ -9,6 +9,10 @@ just 4 KiB of guest RAM and a handful of registers. Serial I/O is served by
 the hypervisor itself: each `out` instruction traps out to the host, which
 prints the byte and resumes the guest.
 
+`kvmtest.c` is commented step by step (steps 1–16), covering what each ioctl
+does, why its arguments look the way they do, and what state the guest is put
+into along the way.
+
 [Upstream sample](https://lwn.net/Articles/658511/): Copyright (c) 2015 Intel Corporation, authored by
 Josh Triplett &lt;josh@joshtriplett.org&gt;. Distributed under the MIT license
 (see the header of `kvmtest.c`).
@@ -79,8 +83,9 @@ of `mmap` against `NULL`, but `mmap` reports failure by returning
 `MAP_FAILED` (`(void *)-1`) and never returns `NULL`. The checks therefore
 could never fire: on failure, execution fell through and dereferenced an
 invalid pointer, producing a segfault instead of the intended diagnostic.
+Each fix is also commented at the call site in `kvmtest.c`.
 
-**1. Guest memory allocation** — `kvmtest.c:70`
+**1. Guest memory allocation** — step 4, backing store for guest RAM
 
 ```diff
      mem = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
@@ -89,9 +94,9 @@ invalid pointer, producing a segfault instead of the intended diagnostic.
          err(1, "allocating guest memory");
 ```
 
-A failure here would previously have crashed at the `memcpy` on line 72.
+A failure here would previously have crashed at the `memcpy` just below it.
 
-**2. vCPU run-area mapping** — `kvmtest.c:97`
+**2. vCPU run-area mapping** — step 8, mapping the vCPU run area
 
 ```diff
      run = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpufd, 0);
@@ -105,20 +110,26 @@ access in the run loop.
 
 These are the only changes to the sample's logic. Because both mappings
 succeed on a normally configured host, observable behavior is unchanged.
+Other than the fixes above and comments, the sample is unmodified.
 
 ## How it works
 
-| Step | Purpose |
-| --- | --- |
-| `open("/dev/kvm")` | Acquire the KVM system device. |
-| `KVM_GET_API_VERSION` | Assert the stable API version (12). |
-| `KVM_CREATE_VM` | Create a VM. |
-| `mmap` + `KVM_SET_USER_MEMORY_REGION` | Register one page of guest RAM at physical `0x1000` and copy in the code. |
-| `KVM_CREATE_VCPU` | Create one vCPU. |
-| `KVM_GET_VCPU_MMAP_SIZE` + `mmap` | Map the shared `struct kvm_run` region used to report exit reasons. |
-| `KVM_GET_SREGS` / `KVM_SET_SREGS` | Force `cs.base = 0` and `cs.selector = 0` so the CPU stays in real mode, bypassing paging and the real-mode interrupt descriptor table. |
-| `KVM_SET_REGS` | Set `rip = 0x1000`, `rax = rbx = 2`, and `rflags = 0x2` (the architecturally reserved bit that must be set). |
-| `KVM_RUN` loop | Run the guest and dispatch on `run->exit_reason`. |
+Numbering matches the step comments in `kvmtest.c`.
+
+| Step | Call | Purpose |
+| --- | --- | --- |
+| 1 | `open("/dev/kvm")` | Acquire the KVM system device. |
+| 2 | `KVM_GET_API_VERSION` | Assert the stable API version (12). |
+| 3 | `KVM_CREATE_VM` | Create a VM. |
+| 4 | `mmap` | Back one page of host memory with the guest program. |
+| 5 | `KVM_SET_USER_MEMORY_REGION` | Register that page as guest RAM at physical `0x1000`. |
+| 6 | `KVM_CREATE_VCPU` | Create one vCPU. |
+| 7 | `KVM_GET_VCPU_MMAP_SIZE` | Learn the size of the run area, including per-exit data. |
+| 8 | `mmap` on `vcpufd` | Map the shared `struct kvm_run` region used to report exit reasons. |
+| 9 | `KVM_GET_SREGS` / `KVM_SET_SREGS` | Force `cs.base = 0` and `cs.selector = 0` so the CPU stays in real mode, bypassing paging and the real-mode interrupt descriptor table. |
+| 10 | `KVM_SET_REGS` | Set `rip = 0x1000`, `rax = rbx = 2`, and `rflags = 0x2` (the architecturally reserved bit that must be set). |
+| 11 | `KVM_RUN` | Enter the guest; returns on VM exit with `run->exit_reason` set. |
+| 12–16 | exit dispatch | Handle `KVM_EXIT_HLT` (success) and `KVM_EXIT_IO`; treat anything else as fatal. |
 
 ### The guest program
 
