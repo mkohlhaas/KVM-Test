@@ -56,3 +56,7 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+# Local build artifacts
+# `*.out` above covers the default gcc name, but this binary has no extension.
+/kvmtest
+

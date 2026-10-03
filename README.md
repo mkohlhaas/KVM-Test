@@ -19,19 +19,31 @@ Requires a C compiler, the KVM UAPI headers (`linux/kvm.h`), and glibc's BSD
 error functions (`err.h`, which lives in glibc, not libbsd).
 
 ```sh
-gcc -Wall -Wextra -o a.out kvmtest.c
+gcc -Wall -Wextra -o kvmtest kvmtest.c
 ```
 
-That is the whole build. For an optimized binary:
+Or use the included Makefile, which builds the same binary:
 
 ```sh
-gcc -O2 -Wall -Wextra -o a.out kvmtest.c
+make            # build kvmtest
+make run        # build, then run it
+make clean      # remove the binary
+```
+
+`CC` and `CFLAGS` can be overridden, for example `make CC=clang` or
+`make CFLAGS='-O2 -Wall -Wextra'`. Note that `CC` defaults to make's built-in
+`cc`, which on most distributions is a symlink to gcc.
+
+For an optimized build without the Makefile:
+
+```sh
+gcc -O2 -Wall -Wextra -o kvmtest kvmtest.c
 ```
 
 ## Running
 
 ```sh
-./a.out
+./kvmtest
 ```
 
 Expected output:
