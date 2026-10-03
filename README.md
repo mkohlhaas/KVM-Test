@@ -83,7 +83,6 @@ of `mmap` against `NULL`, but `mmap` reports failure by returning
 `MAP_FAILED` (`(void *)-1`) and never returns `NULL`. The checks therefore
 could never fire: on failure, execution fell through and dereferenced an
 invalid pointer, producing a segfault instead of the intended diagnostic.
-Each fix is also commented at the call site in `kvmtest.c`.
 
 **1. Guest memory allocation** — step 4, backing store for guest RAM
 
