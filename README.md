@@ -50,11 +50,19 @@ gcc -O2 -Wall -Wextra -o kvmtest kvmtest.c
 ./kvmtest
 ```
 
-Expected output:
+Expected stdout (guest output only):
 
 ```
 4
 KVM_EXIT_HLT
+```
+
+You can also trace the host's setup and the run loop on stderr, which is
+unaffected by the guest's bytes:
+
+```sh
+./kvmtest 2>&1 | head -16  # show the full host trace interleaved
+./kvmtest 2>/dev/null      # stdout only, same as above
 ```
 
 ### Requirements
@@ -109,7 +117,10 @@ access in the run loop.
 
 These are the only changes to the sample's logic. Because both mappings
 succeed on a normally configured host, observable behavior is unchanged.
-Other than the fixes above and comments, the sample is unmodified.
+In addition to the fixes above, this version adds step-by-step tracing to
+stderr (prefixed with `kvmtest:`) that follows the same step numbering as the
+comments, plus line buffering for stdout so the two streams interleave in a
+predictable order. None of these additions change the guest's behavior.
 
 ## How it works
 

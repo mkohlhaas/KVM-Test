@@ -41,6 +41,14 @@
  * coincide by construction: this guest is one page, placed in the second. */
 #define GUEST_LOAD_ADDR GUEST_MEM_SIZE
 
+/* Trace a step of the host program to stderr.
+ *
+ * stderr rather than stdout so that the guest's serial bytes, which go to
+ * stdout through putchar(), stay the program's only stdout output. The
+ * interleaving of the two streams is what makes the control flow readable.
+ */
+#define trace(...) fprintf(stderr, "kvmtest: " __VA_ARGS__)
+
 /* The guest program: 13 bytes of hand-assembled x86 machine code.
  *
  * It is written for 16-bit real mode, where instructions are encoded without
@@ -71,6 +79,12 @@ const uint8_t code[] = {
 };
 
 int main(void) {
+  /* stdout is line-buffered on a terminal but block-buffered when redirected
+   * to a file, which would let the stderr trace and the guest's bytes arrive
+   * out of order in a log. Line-buffering unconditionally keeps the two
+   * streams in step wherever they end up. */
+  setvbuf(stdout, NULL, _IOLBF, 0);
+
   /* Throughout main, ioctl() returns -1 with errno set on failure, so every
    * call is checked for that. The error helpers exit immediately and never
    * return:
@@ -90,6 +104,7 @@ int main(void) {
   int kvm = open("/dev/kvm", O_RDWR | O_CLOEXEC);
   if (kvm == -1)
     err(1, "/dev/kvm");
+  trace("step 1: /dev/kvm opened as fd %d\n", kvm);
 
   /* Step 2: verify the KVM API version.
    *
@@ -104,6 +119,7 @@ int main(void) {
     err(1, "KVM_GET_API_VERSION");
   if (ret != 12)
     errx(1, "KVM_GET_API_VERSION %d, expected 12", ret);
+  trace("step 2: KVM API version %d\n", ret);
 
   /* Step 3: create a virtual machine.
    *
@@ -115,6 +131,7 @@ int main(void) {
   int vmfd = ioctl(kvm, KVM_CREATE_VM, (unsigned long)0);
   if (vmfd == -1)
     err(1, "KVM_CREATE_VM");
+  trace("step 3: VM created as fd %d\n", vmfd);
 
   /* Step 4: allocate backing store for guest RAM.
    *
@@ -137,6 +154,8 @@ int main(void) {
   /* Copy the guest program to the start of the page. The remainder of the
    * page stays zero, which is harmless: nothing ever executes it. */
   memcpy(mem, code, sizeof(code));
+  trace("step 4: %zu bytes of guest RAM backed at host address %p\n",
+        (size_t)GUEST_MEM_SIZE, (void *)mem);
 
   /* Step 5: register that page as guest physical memory.
    *
@@ -161,6 +180,8 @@ int main(void) {
   ret = ioctl(vmfd, KVM_SET_USER_MEMORY_REGION, &region);
   if (ret == -1)
     err(1, "KVM_SET_USER_MEMORY_REGION");
+  trace("step 5: slot %u registered at guest physical %#x, %zu bytes\n", region.slot,
+        (unsigned int)GUEST_LOAD_ADDR, (size_t)GUEST_MEM_SIZE);
 
   /* Step 6: create a virtual CPU.
    *
@@ -171,6 +192,7 @@ int main(void) {
   int vcpufd = ioctl(vmfd, KVM_CREATE_VCPU, (unsigned long)0);
   if (vcpufd == -1)
     err(1, "KVM_CREATE_VCPU");
+  trace("step 6: vCPU created as fd %d\n", vcpufd);
 
   /* Step 7: ask how large the vCPU run area needs to be.
    *
@@ -205,6 +227,8 @@ int main(void) {
   run = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpufd, 0);
   if (run == MAP_FAILED)
     err(1, "mmap vcpu");
+  trace("step 7: run area is %zu bytes\n", mmap_size);
+  trace("step 8: run area mapped at host address %p\n", (void *)run);
 
   /* Step 9: force the vCPU into 16-bit real mode.
    *
@@ -229,6 +253,7 @@ int main(void) {
   ret = ioctl(vcpufd, KVM_SET_SREGS, &sregs);
   if (ret == -1)
     err(1, "KVM_SET_SREGS");
+  trace("step 9: cs.base and cs.selector cleared, vCPU left in real mode\n");
 
   /* Step 10: set the general-purpose registers and the entry point.
    *
@@ -250,6 +275,8 @@ int main(void) {
   ret = ioctl(vcpufd, KVM_SET_REGS, &regs);
   if (ret == -1)
     err(1, "KVM_SET_REGS");
+  trace("step 10: rip = %#x, rax = rbx = 2, rflags = 0x2\n",
+        (unsigned int)GUEST_LOAD_ADDR);
 
   /* Step 11: run the guest and handle what it does on the way out.
    *
@@ -262,6 +289,7 @@ int main(void) {
    * entered. This sample has no signal handlers and treats any -1 as fatal.)
    */
   while (1) {
+    trace("step 11: KVM_RUN, entering the guest\n");
     ret = ioctl(vcpufd, KVM_RUN, NULL);
     if (ret == -1)
       err(1, "KVM_RUN");
@@ -270,6 +298,7 @@ int main(void) {
     /* Step 12: the guest executed HLT, so it has finished its work. Print a
      * marker and exit successfully. */
     case KVM_EXIT_HLT:
+      trace("        guest exited: KVM_EXIT_HLT, it halted\n");
       puts("KVM_EXIT_HLT");
       return 0;
 
@@ -281,14 +310,18 @@ int main(void) {
        * bytes at once, or an IN rather than an OUT -- is a guest request the
        * host has no answer for, so refuse it instead of guessing. */
       if (run->io.direction == KVM_EXIT_IO_OUT && run->io.size == 1 &&
-          run->io.port == 0x3f8 && run->io.count == 1)
+          run->io.port == 0x3f8 && run->io.count == 1) {
         /* The transferred bytes are not in the struct; data_offset locates
          * them within the run mapping, relative to its start. Since size is
          * 1, there is a single byte, which is the character to print. */
-        putchar(*(((char *)run) + run->io.data_offset));
-      else
+        unsigned char byte = *(((char *)run) + run->io.data_offset);
+        trace("        guest exited: KVM_EXIT_IO, %u byte out to port %#x"
+              ", resuming the guest\n",
+              (unsigned int)run->io.size, (unsigned int)run->io.port);
+        putchar(byte);
+      } else {
         errx(1, "unhandled KVM_EXIT_IO");
-      /* Resume the guest: it continues with the instruction after the OUT. */
+      }
       break;
 
     /* Step 14: the hardware refused to enter the guest, which usually means
