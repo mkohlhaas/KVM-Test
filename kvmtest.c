@@ -131,8 +131,6 @@ int main(void) {
    */
   uint8_t *mem = mmap(NULL, GUEST_MEM_SIZE, PROT_READ | PROT_WRITE,
                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-  /* mmap() reports failure by returning MAP_FAILED ((void *)-1), never NULL,
-   * so comparing against NULL here could not detect an error. */
   if (mem == MAP_FAILED)
     err(1, "allocating guest memory");
 
@@ -205,8 +203,6 @@ int main(void) {
    * after KVM_RUN, and reads certain fields out of it (for example
    * request_interrupt_window) to configure the next run. */
   run = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpufd, 0);
-  /* As with the guest memory mapping, mmap() signals failure with
-   * MAP_FAILED rather than NULL. */
   if (run == MAP_FAILED)
     err(1, "mmap vcpu");
 
